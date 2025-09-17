@@ -6,8 +6,6 @@ from ev3dev2.button import Button
 from ev3dev2.sensor.lego import ColorSensor, TouchSensor
 from ev3dev2.motor import LargeMotor, OUTPUT_A, OUTPUT_B, OUTPUT_C, OUTPUT_D, MoveTank, SpeedPercent, LineFollowErrorLostLine, LineFollowErrorTooFast, follow_for_ms, follow_for_forever
 
-
-
 class RobotConfig:
     # I/O Values
     LEFT_WHEEL = OUTPUT_A
@@ -35,6 +33,7 @@ class RobotConfig:
     WORKING_SPEED = 50
     
     
+    MUTE = False
     
 class LineFollowingRobot:
     def __init__(   self,
@@ -48,7 +47,9 @@ class LineFollowingRobot:
                     white=RobotConfig.WHITE,
                     follow_left_edge=RobotConfig.FOLLOW_LEFT_EDGE,
                     follow_for=RobotConfig.FOLLOW_FOR,
-                    follow_line_time=RobotConfig.FOLLOW_LINE_TIME):
+                    follow_line_time=RobotConfig.FOLLOW_LINE_TIME,
+                    mute=RobotConfig.MUTE
+                ):
         print("Creating Robot")
         #Variables
         self.left_wheel = left_wheel
@@ -62,16 +63,22 @@ class LineFollowingRobot:
         self.follow_left_edge = follow_left_edge
         self.follow_for = follow_for
         self.follow_line_time = follow_line_time
-        
+        self.mute = mute
         # Create Device CLasses
-        self.sound = Sound()
+        self._sound = Sound()
         self.button = Button()
         self.colorSensor = ColorSensor()
         self.tank = MoveTank(self.left_wheel, self.right_wheel)
-        self.sound.beep()
-
+        self.beep()
+    
+    def beep(self):
+        if self.mute == False:
+            self._sound.beep()
+    
     def start(self):
         print("Starting the line following process")
+        while not self.button.up: #Waits to for this to be pressed before starting  
+            sleep(0.1)
         while not self.button.on_enter: # Stops if the central button is pressed
             # There is an option to add a follow time
             try:
@@ -95,7 +102,7 @@ class LineFollowingRobot:
                 print("EXCEPTION: Robot lost the line")
             
             self.tank.off() #Just in case
-            self.sound.beep()
+            self.beep()
 
 
 
@@ -115,6 +122,7 @@ def get_arguments():
     parser.add_argument("--w", type=int, default=RobotConfig.WHITE, help="Intensity value for outside the line (0-255)")
     parser.add_argument("--follow_left_edge", type=bool, default=RobotConfig.FOLLOW_LEFT_EDGE, help="True if sensor is on the left side")
     parser.add_argument("--follow_time", type=int, default=RobotConfig.FOLLOW_LINE_TIME, help="Time in ms to follow line before doing other actions")
+    parser.add_argument("--silent","--s", action="store_true", help="The robot won't beep ")
     
     
     args = parser.parse_args()
@@ -133,7 +141,8 @@ def main():
         black=args.b,
         white=args.w,
         follow_left_edge=args.follow_left_edge,
-        follow_line_time=args.follow_time
+        follow_line_time=args.follow_time,
+        mute=args.silent
     )
 
     robot.start()
