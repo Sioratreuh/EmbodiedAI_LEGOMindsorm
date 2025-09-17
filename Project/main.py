@@ -1,3 +1,5 @@
+import sys
+import signal
 import argparse
 from time import sleep
 
@@ -69,16 +71,29 @@ class LineFollowingRobot:
         self.button = Button()
         self.colorSensor = ColorSensor()
         self.tank = MoveTank(self.left_wheel, self.right_wheel)
+        
+        #Signal handlers to ensure that the system stops when we kill it or use Ctrl+C
+        signal.signal(signal.SIGINT, self._handle_exit)   # Ctrl+C
+        signal.signal(signal.SIGTERM, self._handle_exit)  # kill
+
         self.beep()
-    
+    def _handle_exit(self, signum, frame):
+        print(f"Exiting safely after {signum}")
+        # Added anything that needs to be stopped
+        self.tank.off()
+        self.beep()
+        
+        sys.exit(0)      
+
     def beep(self):
         if self.mute == False:
             self._sound.beep()
     
     def start(self):
-        print("Starting the line following process")
-        while not self.button.up: #Waits to for this to be pressed before starting  
+        print("Press the up button to start")
+        while not self.button.on_up: #Waits to for this to be pressed before starting  
             sleep(0.1)
+        print("Starting to follow line, press enter to stop")
         while not self.button.on_enter: # Stops if the central button is pressed
             # There is an option to add a follow time
             try:
