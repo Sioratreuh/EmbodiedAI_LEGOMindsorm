@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import signal
 import argparse
@@ -22,7 +23,7 @@ class RobotConfig:
     # Line Control Constants
     ##* Initial values tank example from https://ev3dev-lang.readthedocs.io/projects/python-ev3dev/en/stable/motors.html) ##
     ### PID Controls ###
-    KP = 11.3 # Proportional
+    KP = 5#11.3 # Proportional
     KI = 0.05 # Integral
     KD = 3.2  # Derivative
     
@@ -52,8 +53,9 @@ class LineFollowingRobot:
                     follow_line_time=RobotConfig.FOLLOW_LINE_TIME,
                     mute=RobotConfig.MUTE
                 ):
-        print("Creating Robot")
         #Variables
+        print("Creating Robot")
+
         self.left_wheel = left_wheel
         self.right_wheel = right_wheel
         self.working_speed = working_speed
@@ -71,14 +73,14 @@ class LineFollowingRobot:
         self.button = Button()
         self.colorSensor = ColorSensor()
         self.tank = MoveTank(self.left_wheel, self.right_wheel)
-        
+        self.tank.cs=self.colorSensor
         #Signal handlers to ensure that the system stops when we kill it or use Ctrl+C
         signal.signal(signal.SIGINT, self._handle_exit)   # Ctrl+C
         signal.signal(signal.SIGTERM, self._handle_exit)  # kill
 
         self.beep()
     def _handle_exit(self, signum, frame):
-        print(f"Exiting safely after {signum}")
+        print("Exiting safely after")
         # Added anything that needs to be stopped
         self.tank.off()
         self.beep()
@@ -91,23 +93,27 @@ class LineFollowingRobot:
     
     def start(self):
         print("Press the up button to start")
-        while not self.button.on_up: #Waits to for this to be pressed before starting  
+        while not self.button.up: #Waits to for this to be pressed before starting  
             sleep(0.1)
+        self.tank.on(SpeedPercent(-self.working_speed),SpeedPercent(-self.working_speed))
+
         print("Starting to follow line, press enter to stop")
-        while not self.button.on_enter: # Stops if the central button is pressed
+        while not self.button.enter: # Stops if the central button is pressed
             # There is an option to add a follow time
             try:
-                self.tank.follow_line(
-                    kp=self.kp,
-                    ki=self.ki,
-                    kd=self.kd,
-                    speed=SpeedPercent(self.working_speed),
-                    target_light_intensity=self.black,
-                    follow_left_edge=self.follow_left_edge,
-                    white=self.white,
-                    follow_for=RobotConfig.FOLLOW_FOR,
-                    ms=self.follow_line_time
-                )
+                #sleep(0.1)
+                pass
+                # self.tank.follow_line(
+                #     kp=self.kp,
+                #     ki=self.ki,
+                #     kd=self.kd,
+                #     speed=SpeedPercent(-self.working_speed),
+                #     target_light_intensity=self.black,
+                #     follow_left_edge=self.follow_left_edge,
+                #     white=self.white,
+                #     follow_for=RobotConfig.FOLLOW_FOR,
+                #     ms=self.follow_line_time
+                # )
             except LineFollowErrorLostLine:
                 # If it happens we can consider making it slower
                 # This happens when the robot is moving too fas for the PID
@@ -116,8 +122,8 @@ class LineFollowingRobot:
                 # Here we can try to do something to ensure it returns to the line
                 print("EXCEPTION: Robot lost the line")
             
-            self.tank.off() #Just in case
-            self.beep()
+        self.tank.off() #Just in case
+        self.beep()
 
 
 
