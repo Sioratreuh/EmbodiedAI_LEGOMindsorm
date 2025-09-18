@@ -33,7 +33,7 @@ class RobotConfig:
     
     # Speed Constants
     MAX_SPEED = 100
-    WORKING_SPEED = 50
+    WORKING_SPEED = 100
     
     
     MUTE = False
