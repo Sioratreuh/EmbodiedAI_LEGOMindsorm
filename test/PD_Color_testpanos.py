@@ -100,9 +100,9 @@ class SpeedyGonzalesPD:
         # Calculate target (edge of line)
         self.target_value = (self.white_value + self.black_value) / 2
 
-        print(f"White: {self.white_value:.1f}")
-        print(f"Black: {self.black_value:.1f}")
-        print(f"Target: {self.target_value:.1f}")
+        print("White: {:.1f}".format(self.white_value))
+        print("Black: {:.1f}".format(self.black_value))
+        print("Target: {:.1f}".format(self.target_value))
         self.sound.beep()
         print("Calibration complete!\n")
 
