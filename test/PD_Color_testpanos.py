@@ -109,9 +109,9 @@ class SpeedyGonzalesPD:
     def tune_pd_parameters(self):
         """Interactive PD parameter tuning"""
         print("\n=== PD PARAMETER TUNING ===")
-        print(f"Current KP: {self.kp}")
-        print(f"Current KD: {self.kd}")
-        print(f"Current Base Speed: {self.base_speed}")
+        print("Current KP: {}".format(self.kp))
+        print("Current KD: {}".format(self.kd))
+        print("Current Base Speed: {}".format(self.base_speed))
 
         try:
             kp_input = input("Enter new KP (or press Enter to keep current): ")
@@ -129,7 +129,7 @@ class SpeedyGonzalesPD:
         except ValueError:
             print("Invalid input, keeping current values")
 
-        print(f"Updated - KP: {self.kp}, KD: {self.kd}, Speed: {self.base_speed}\n")
+        print("Updated - KP: {}, KD: {}, Speed: {}\n".format(self.kp,self.kd,self.base_speed))
         self.sound.beep()
 
     def compute_pd_control(self, left_value, right_value):
@@ -184,8 +184,8 @@ class SpeedyGonzalesPD:
         self.mB.on(SpeedPercent(stability_speed))
 
         # Debug output
-        print(f"L:{left_value:3.0f} | R:{right_value:3.0f} | "
-              f"Err:{error:5.1f} | ML:{left_speed:5.1f} | MR:{right_speed:5.1f}")
+        print("L:{:3.0f} | R:{:3.0f} | Err:{:5.1f} | ML:{:5.1f} | MR:{:5.1f}".format(
+            left_value,right_value,error,left_speed,right_speed))
 
     def auto_tune_parameters(self):
         """
@@ -208,7 +208,7 @@ class SpeedyGonzalesPD:
             self.kd = 1.2
             self.base_speed = 15
 
-        print(f"Auto-tuned: KP={self.kp}, KD={self.kd}, Speed={self.base_speed}")
+        print("Auto-tuned: KP={}, KD={}, Speed={}".format(self.kp,self.kd,self.base_speed))
         self.sound.beep()
 
     def get_sensor_quality(self):
@@ -216,11 +216,11 @@ class SpeedyGonzalesPD:
         try:
             left, right = self.read_sensors()
             if 0 <= left <= 100 and 0 <= right <= 100:
-                return True, f"Sensors OK - L:{left}, R:{right}"
+                return True, "Sensors OK - L:{}, R:{}".format(left, right)
             else:
-                return False, f"Sensor values out of range - L:{left}, R:{right}"
+                return False, "Sensor values out of range - L:{}, R:{}".format(left, right)
         except Exception as e:
-            return False, f"Sensor error: {e}"
+            return False, "Sensor error: {}".format(e)
 
 def setup_keyboard():
     """Setup non-blocking keyboard input"""
@@ -291,7 +291,7 @@ def main():
 
                 elif command == 'i':
                     ok, info = robot.get_sensor_quality()
-                    print(f"→ {info}")
+                    print("→ {}".format(info))
                     if not ok:
                         robot.sound.speak("Sensor problem")
 
@@ -308,7 +308,7 @@ def main():
     except KeyboardInterrupt:
         print("\nProgram interrupted by user")
     except Exception as e:
-        print(f"\nError occurred: {e}")
+        print("\nError occurred: {}".format(e))
     finally:
         # Cleanup
         robot.stop_all_motors()
