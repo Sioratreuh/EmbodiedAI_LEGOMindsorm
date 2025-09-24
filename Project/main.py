@@ -101,19 +101,17 @@ class LineFollowingRobot:
         while not self.button.enter: # Stops if the central button is pressed
             # There is an option to add a follow time
             try:
-                #sleep(0.1)
-                pass
-                # self.tank.follow_line(
-                #     kp=self.kp,
-                #     ki=self.ki,
-                #     kd=self.kd,
-                #     speed=SpeedPercent(-self.working_speed),
-                #     target_light_intensity=self.black,
-                #     follow_left_edge=self.follow_left_edge,
-                #     white=self.white,
-                #     follow_for=RobotConfig.FOLLOW_FOR,
-                #     ms=self.follow_line_time
-                # )
+                self.tank.follow_line(
+                    kp=self.kp,
+                    ki=self.ki,
+                    kd=self.kd,
+                    speed=SpeedPercent(-self.working_speed),
+                    target_light_intensity=self.black,
+                    follow_left_edge=self.follow_left_edge,
+                    white=self.white,
+                    follow_for=RobotConfig.FOLLOW_FOR,
+                    ms=self.follow_line_time
+                )
             except LineFollowErrorLostLine:
                 # If it happens we can consider making it slower
                 # This happens when the robot is moving too fas for the PID
