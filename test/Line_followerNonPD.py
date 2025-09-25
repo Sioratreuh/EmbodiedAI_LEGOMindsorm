@@ -40,6 +40,7 @@ RIGHT_MOTOR_PORT = OUTPUT_A
 BASE_SPEED = 30             # base forward speed (percent)
 TURN_MAG = 22               # base turn magnitude (percent units)
 DEAD_ZONE = 1.0             # small tolerance on sensor difference to go straight
+CORNER_CORRECTION = 7       # Make the corner turns sharper after 
 
 # Reflection thresholds (will be replaced by calibrate() if used)
 # Lower values indicate darker (black), higher values indicate brighter (white)
@@ -57,7 +58,8 @@ SAMPLE_INTERVAL = 0.03
 PIVOT_SPEED = 25            # rotation wheel speed when pivoting (percent)
 PIVOT_DIRECTION = 1         # default pivot direction (1 => right pivot, -1 => left pivot)
 PIVOT_MIN_TIME = 0.05       # minimum loop sleep during pivot (s)
-
+CORNER_BOOST_STEP = 3.5     # extra turn % per loop when stuck turning
+CORNER_BOOST_MAX = 35       # maximum extra boost
 # -----------------------
 # Hardware init
 # -----------------------
@@ -68,6 +70,7 @@ try:
     cl_L.mode = 'COL-REFLECT'
     cl_R.mode = 'COL-REFLECT'
 except Exception:
+
     pass
 
 tank = MoveTank(LEFT_MOTOR_PORT, RIGHT_MOTOR_PORT)
@@ -135,6 +138,8 @@ class EvasiveLineFollower:
 
         # pivot direction memory (try to pivot in direction of last evasion)
         self.last_turn_sign = 1
+        self.turn_streak_sign = 0
+        self.turn_streak_count = 0
 
     def calibrate(self, samples=20, delay=0.02):
         """
@@ -182,53 +187,43 @@ class EvasiveLineFollower:
         return left_on_black, right_on_black, L, R
 
     def _compute_turn(self, left_on_black, right_on_black, L, R):
-        """
-        Compute desired turn amount (signed): positive => turn right, negative => turn left
-        We use three cases:
-         - only left_on_black: turn right  (positive)
-         - only right_on_black: turn left  (negative)
-         - neither: go straight (turn 0)
-         - both: handled by pivot logic (not here)
-        The returned turn is already filtered (exponential).
-        """
         desired = 0.0
+        sign = 0
+
         if left_on_black and not right_on_black:
-            # line moved left -> steer right
             desired = +self.turn_mag
+            sign = +1
             self.last_turn_sign = 1
         elif right_on_black and not left_on_black:
-            # line moved right -> steer left
             desired = -self.turn_mag
+            sign = -1
             self.last_turn_sign = -1
         else:
-            # no sensor sees black -> straight (0)
-            # We consider small sensor mismatches as dead zone
             diff = float(R) - float(L)
             if abs(diff) <= self.dead_zone:
                 desired = 0.0
+                sign = 0
             else:
-                # small corrective bias proportional to sign(diff), soft corrective nudge
-                desired = clamp((diff / max(abs(diff), 1.0)) * (self.turn_mag * 0.35),
+                sign = 1 if diff > 0 else -1
+                desired = clamp(sign * (self.turn_mag * 0.35),
                                 -self.turn_mag * 0.35, self.turn_mag * 0.35)
 
-        # exponential filter for smoothing:
+        # --- Streak counter logic ---
+        if sign != 0 and sign == self.turn_streak_sign:
+            self.turn_streak_count += 1
+        else:
+            self.turn_streak_sign = sign
+            self.turn_streak_count = 0
+
+        # apply boost if turning same way for a while
+        if sign != 0 and self.turn_streak_count > 3:  # allow a few loops before boosting
+            boost = min(self.turn_streak_count * CORNER_BOOST_STEP, CORNER_BOOST_MAX)
+            desired = sign * (abs(desired) + boost)
+
+        # exponential smoothing
         self.filtered_turn = (self.turn_alpha * self.filtered_turn +
                               (1.0 - self.turn_alpha) * desired)
         return self.filtered_turn
-
-    def _apply_drive(self, turn_value):
-        """
-        Convert (base_speed, turn_value) into left/right wheel speeds and
-        apply to the MoveTank using SpeedPercent.
-        turn_value is in percent units: positive -> right turn (left wheel slower).
-        """
-        left_w = self.base_speed - turn_value
-        right_w = self.base_speed + turn_value
-        left_w = clamp(left_w, -100, 100)
-        right_w = clamp(right_w, -100, 100)
-        # apply
-        self.tank.on(SpeedPercent(left_w), SpeedPercent(right_w))
-        return left_w, right_w
 
     def _pivot_search(self, prefer_direction=1):
         """
