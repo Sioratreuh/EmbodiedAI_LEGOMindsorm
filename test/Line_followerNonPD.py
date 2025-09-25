@@ -59,7 +59,7 @@ PIVOT_SPEED = 25            # rotation wheel speed when pivoting (percent)
 # default pivot direction (1 => right pivot, -1 => left pivot)
 PIVOT_DIRECTION = 1
 PIVOT_MIN_TIME = 0.05       # minimum loop sleep during pivot (s)
-CORNER_BOOST_STEP = 3.5     # extra turn % per loop when stuck turning
+CORNER_BOOST_STEP = 1.5     # extra turn % per loop when stuck turning
 CORNER_BOOST_MAX = 35       # maximum extra boost
 # -----------------------
 # Hardware init
