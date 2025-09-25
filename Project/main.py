@@ -23,17 +23,17 @@ class RobotConfig:
     # Line Control Constants
     ##* Initial values tank example from https://ev3dev-lang.readthedocs.io/projects/python-ev3dev/en/stable/motors.html) ##
     ### PID Controls ###
-    KP = 5#11.3 # Proportional
+    KP = 17.3#11.3 # Proportional
     KI = 0.05 # Integral
-    KD = 3.2  # Derivative
+    KD = 4.2  # Derivative
     
     FOLLOW_LEFT_EDGE = True  #True if the sensor is on the left 
     FOLLOW_FOR=follow_for_ms #Controls for how long to follow the line, is either follow_forever or follow_for_ms and then specify a variable ms=something
     FOLLOW_LINE_TIME = 4500  #Controls the time for the loop to restart if
     
     # Speed Constants
-    MAX_SPEED = 100
-    WORKING_SPEED = 20
+    MAX_SPEED = -100
+    WORKING_SPEED = -30
     
     
     MUTE = False
