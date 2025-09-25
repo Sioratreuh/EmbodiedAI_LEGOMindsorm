@@ -40,7 +40,7 @@ RIGHT_MOTOR_PORT = OUTPUT_A
 BASE_SPEED = 30             # base forward speed (percent)
 TURN_MAG = 22               # base turn magnitude (percent units)
 DEAD_ZONE = 1.0             # small tolerance on sensor difference to go straight
-CORNER_CORRECTION = 7       # Make the corner turns sharper after 
+CORNER_CORRECTION = 7       # Make the corner turns sharper after
 
 # Reflection thresholds (will be replaced by calibrate() if used)
 # Lower values indicate darker (black), higher values indicate brighter (white)
@@ -56,7 +56,8 @@ SAMPLE_INTERVAL = 0.03
 
 # Pivot search parameters
 PIVOT_SPEED = 25            # rotation wheel speed when pivoting (percent)
-PIVOT_DIRECTION = 1         # default pivot direction (1 => right pivot, -1 => left pivot)
+# default pivot direction (1 => right pivot, -1 => left pivot)
+PIVOT_DIRECTION = 1
 PIVOT_MIN_TIME = 0.05       # minimum loop sleep during pivot (s)
 CORNER_BOOST_STEP = 3.5     # extra turn % per loop when stuck turning
 CORNER_BOOST_MAX = 35       # maximum extra boost
@@ -70,7 +71,6 @@ try:
     cl_L.mode = 'COL-REFLECT'
     cl_R.mode = 'COL-REFLECT'
 except Exception:
-
     pass
 
 tank = MoveTank(LEFT_MOTOR_PORT, RIGHT_MOTOR_PORT)
@@ -79,8 +79,11 @@ sound = Sound()
 # -----------------------
 # Utilities
 # -----------------------
+
+
 def is_data():
     return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
+
 
 def clamp(v, lo, hi):
     if v < lo:
@@ -88,6 +91,7 @@ def clamp(v, lo, hi):
     if v > hi:
         return hi
     return v
+
 
 def read_reflection(sensor):
     """
@@ -106,6 +110,8 @@ def read_reflection(sensor):
 # -----------------------
 # Line follower class
 # -----------------------
+
+
 class EvasiveLineFollower:
     """
     Non-PD evasive line follower:
@@ -113,6 +119,7 @@ class EvasiveLineFollower:
       - If left sees black -> steer right, and vice versa
       - If both see black -> pivot & search until one sensor sees white
     """
+
     def __init__(self,
                  left_sensor,
                  right_sensor,
@@ -148,7 +155,8 @@ class EvasiveLineFollower:
          2) place both sensors on black (on the line) and press Enter
         The method then computes mid-threshold per sensor.
         """
-        print("Calibration: place both sensors on WHITE (off line) and press Enter".format())
+        print(
+            "Calibration: place both sensors on WHITE (off line) and press Enter".format())
         input()
         wL = 0.0
         wR = 0.0
@@ -175,8 +183,10 @@ class EvasiveLineFollower:
         self.right_threshold = (wR + bR) / 2.0
 
         print("Calibration complete:".format())
-        print("  LEFT white={:.1f}, black={:.1f}, threshold={:.1f}".format(wL, bL, self.left_threshold))
-        print("  RIGHT white={:.1f}, black={:.1f}, threshold={:.1f}".format(wR, bR, self.right_threshold))
+        print("  LEFT white={:.1f}, black={:.1f}, threshold={:.1f}".format(
+            wL, bL, self.left_threshold))
+        print("  RIGHT white={:.1f}, black={:.1f}, threshold={:.1f}".format(
+            wR, bR, self.right_threshold))
 
     def _sensor_states(self):
         """Return tuple (left_on_black, right_on_black, left_val, right_val)."""
@@ -217,13 +227,28 @@ class EvasiveLineFollower:
 
         # apply boost if turning same way for a while
         if sign != 0 and self.turn_streak_count > 3:  # allow a few loops before boosting
-            boost = min(self.turn_streak_count * CORNER_BOOST_STEP, CORNER_BOOST_MAX)
+            boost = min(self.turn_streak_count *
+                        CORNER_BOOST_STEP, CORNER_BOOST_MAX)
             desired = sign * (abs(desired) + boost)
 
         # exponential smoothing
         self.filtered_turn = (self.turn_alpha * self.filtered_turn +
                               (1.0 - self.turn_alpha) * desired)
         return self.filtered_turn
+
+    def _apply_drive(self, turn_value):
+        """
+        Convert (base_speed, turn_value) into left/right wheel speeds and
+        apply to the MoveTank using SpeedPercent.
+        turn_value is in percent units: positive -> right turn (left wheel slower).
+        """
+        left_w = self.base_speed - turn_value
+        right_w = self.base_speed + turn_value
+        left_w = clamp(left_w, -100, 100)
+        right_w = clamp(right_w, -100, 100)
+        # apply
+        self.tank.on(SpeedPercent(left_w), SpeedPercent(right_w))
+        return left_w, right_w
 
     def _pivot_search(self, prefer_direction=1):
         """
@@ -246,7 +271,8 @@ class EvasiveLineFollower:
                 if not (left_on_black and right_on_black):
                     # stop motors and exit
                     self.tank.off()
-                    print("Pivot finished: left_on_black={}, right_on_black={}".format(left_on_black, right_on_black))
+                    print("Pivot finished: left_on_black={}, right_on_black={}".format(
+                        left_on_black, right_on_black))
                     return
                 # short sleep to avoid busy loop
                 time.sleep(PIVOT_MIN_TIME)
@@ -259,7 +285,8 @@ class EvasiveLineFollower:
         Continuous follow loop. Call from main program.
         This loop does not return until stopped by external control.
         """
-        print("Starting evasive follow loop. Base speed={}, turn_mag={}".format(self.base_speed, self.turn_mag))
+        print("Starting evasive follow loop. Base speed={}, turn_mag={}".format(
+            self.base_speed, self.turn_mag))
         while True:
             left_on_black, right_on_black, L, R = self._sensor_states()
 
@@ -286,6 +313,8 @@ class EvasiveLineFollower:
 # -----------------------
 # Main program and controls
 # -----------------------
+
+
 def main():
     old_settings = termios.tcgetattr(sys.stdin)
     tty.setcbreak(sys.stdin.fileno())
@@ -338,7 +367,8 @@ def main():
                     follower.filtered_turn = 0.0
                     continue
 
-                turn = follower._compute_turn(left_on_black, right_on_black, L, R)
+                turn = follower._compute_turn(
+                    left_on_black, right_on_black, L, R)
                 left_w, right_w = follower._apply_drive(turn)
 
                 print("L:{:.1f} R:{:.1f} | L_black:{} R_black:{} | turn:{:.2f} | ML:{:.1f} MR:{:.1f}".format(
@@ -355,6 +385,7 @@ def main():
         tank.off()
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
         print("Program terminated.".format())
+
 
 if __name__ == "__main__":
     main()
