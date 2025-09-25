@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Simple two-sensor line follower for EV3 (no PID)
-- Two light/color sensors (left: in4, right: in1)
-- Three motors: left, right, auxiliary (OUTPUT_D, OUTPUT_A, OUTPUT_B)
-- Bang-bang / threshold control (no P, I, D)
-- Includes calibration, motor direction test, sensor checks and keyboard menu
+Evasive line follower (non-PD) using ev3dev2.
 
-Author: adapted from user-provided PD example
+Behavior:
+ - The black line is expected to be centered between two color sensors.
+ - When a sensor detects black, the robot "evades" the line by turning
+   in the opposite direction so the line returns to the sensor pair center.
+ - Both sensors black -> pivot in place and search until a sensor finds white.
+ - Smooth transitions via exponential filtering.
+
+Controls (keyboard, terminal):
+ - 's' : toggle start / stop
+ - 'r' : reset filters/state
+ - 'q' : quit program
+
+All prints use .format() (no f-strings).
 """
 
 import sys
@@ -14,287 +23,343 @@ import select
 import tty
 import termios
 import time
-from ev3dev2.sound import Sound
+
 from ev3dev2.sensor.lego import ColorSensor
-from ev3dev2.motor import LargeMotor, OUTPUT_A, OUTPUT_B, OUTPUT_D, SpeedPercent
+from ev3dev2.motor import MoveTank, OUTPUT_A, OUTPUT_D, SpeedPercent
+from ev3dev2.sound import Sound
 
-class SpeedySimple:
-    """Simple rule-based line follower"""
+# -----------------------
+# Configuration / Tunables
+# -----------------------
+LEFT_COLOR_PORT = 'in4'   # adjust if needed
+RIGHT_COLOR_PORT = 'in1'  # adjust if needed
+LEFT_MOTOR_PORT = OUTPUT_D
+RIGHT_MOTOR_PORT = OUTPUT_A
 
-    def __init__(self):
-        # Sensors
-        self.cl_L = ColorSensor('in4')   # left sensor
-        self.cl_R = ColorSensor('in1')   # right sensor
-        self.cl_L.mode = 'COL-REFLECT'
-        self.cl_R.mode = 'COL-REFLECT'
+# Control parameters (tune for your robot)
+BASE_SPEED = 30             # base forward speed (percent)
+TURN_MAG = 22               # base turn magnitude (percent units)
+DEAD_ZONE = 1.0             # small tolerance on sensor difference to go straight
 
-        # Motors
-        self.mR = LargeMotor(OUTPUT_A)   # Right motor
-        self.mL = LargeMotor(OUTPUT_D)   # Left motor
-        self.mB = LargeMotor(OUTPUT_B)   # Auxiliary motor (gripper/other)
+# Reflection thresholds (will be replaced by calibrate() if used)
+# Lower values indicate darker (black), higher values indicate brighter (white)
+LEFT_THRESHOLD_DEFAULT = 18.0
+RIGHT_THRESHOLD_DEFAULT = 18.0
 
-        # Sound
-        self.sound = Sound()
+# Smoothing for turn value (exponential filter alpha in [0,1]):
+# higher alpha = more smoothing (slower response)
+TURN_FILTER_ALPHA = 0.65
 
-        # Motion parameters
-        self.base_speed = 20      # nominal forward speed (percent)
-        self.turn_speed = 10      # how much differential to apply when turning
-        self.max_speed = 30
-        self.min_speed = -self.max_speed
+# Sampling interval (s)
+SAMPLE_INTERVAL = 0.03
 
-        # Runtime flags & calibration
-        self.running = False
-        self.white_value = 9.0
-        self.black_value = 6.0
-        self.threshold = 50.0     # will be set during calibration
-        self.left_motor_polarity = -1
-        self.right_motor_polarity = -1
+# Pivot search parameters
+PIVOT_SPEED = 25            # rotation wheel speed when pivoting (percent)
+PIVOT_DIRECTION = 1         # default pivot direction (1 => right pivot, -1 => left pivot)
+PIVOT_MIN_TIME = 0.05       # minimum loop sleep during pivot (s)
 
-        self.sound.beep()
-        print("Simple line follower initialized.")
+# -----------------------
+# Hardware init
+# -----------------------
+cl_L = ColorSensor(LEFT_COLOR_PORT)
+cl_R = ColorSensor(RIGHT_COLOR_PORT)
+# try to set reflect mode; if not supported, it's okay
+try:
+    cl_L.mode = 'COL-REFLECT'
+    cl_R.mode = 'COL-REFLECT'
+except Exception:
+    pass
 
-    def read_sensors(self):
-        """Return (left, right) reflectance readings"""
-        return self.cl_L.value(), self.cl_R.value()
+tank = MoveTank(LEFT_MOTOR_PORT, RIGHT_MOTOR_PORT)
+sound = Sound()
 
-    def stop_all_motors(self):
-        """Stop all motors immediately"""
-        self.mL.on(SpeedPercent(0))
-        self.mR.on(SpeedPercent(0))
-        self.mB.on(SpeedPercent(0))
+# -----------------------
+# Utilities
+# -----------------------
+def is_data():
+    return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
 
-    def limit_speed(self, speed):
-        return max(min(speed, self.max_speed), self.min_speed)
+def clamp(v, lo, hi):
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
 
-    def test_motor_directions(self):
-        """Simple motor direction test for debugging physical build"""
-        print("\n=== MOTOR DIRECTION TEST ===")
-        print("Left motor forward for 1s")
-        self.mL.on(SpeedPercent(30 * self.left_motor_polarity))
-        time.sleep(1)
-        self.mL.on(SpeedPercent(0))
+def read_reflection(sensor):
+    """
+    Try common attribute names to read reflected light.
+    Returns float value or raises if unavailable.
+    """
+    # prefer reflected_light_intensity property if available
+    if hasattr(sensor, "reflected_light_intensity"):
+        return float(sensor.reflected_light_intensity)
+    # older ev3dev: use value()
+    if hasattr(sensor, "value"):
+        return float(sensor.value())
+    # fallback
+    raise RuntimeError("Cannot read reflection from sensor (unknown API)")
 
-        print("Right motor forward for 1s")
-        self.mR.on(SpeedPercent(30 * self.right_motor_polarity))
-        time.sleep(1)
-        self.mR.on(SpeedPercent(0))
+# -----------------------
+# Line follower class
+# -----------------------
+class EvasiveLineFollower:
+    """
+    Non-PD evasive line follower:
+      - Uses two reflectance sensors
+      - If left sees black -> steer right, and vice versa
+      - If both see black -> pivot & search until one sensor sees white
+    """
+    def __init__(self,
+                 left_sensor,
+                 right_sensor,
+                 tank_drive,
+                 base_speed=BASE_SPEED,
+                 turn_mag=TURN_MAG,
+                 left_threshold=LEFT_THRESHOLD_DEFAULT,
+                 right_threshold=RIGHT_THRESHOLD_DEFAULT,
+                 dead_zone=DEAD_ZONE,
+                 turn_alpha=TURN_FILTER_ALPHA):
+        self.left_sensor = left_sensor
+        self.right_sensor = right_sensor
+        self.tank = tank_drive
+        self.base_speed = float(base_speed)
+        self.turn_mag = float(turn_mag)
+        self.left_threshold = float(left_threshold)
+        self.right_threshold = float(right_threshold)
+        self.dead_zone = float(dead_zone)
+        self.turn_alpha = float(turn_alpha)
 
-        print("Both forward for 1s")
-        self.mL.on(SpeedPercent(30 * self.left_motor_polarity))
-        self.mR.on(SpeedPercent(30 * self.right_motor_polarity))
-        time.sleep(1)
-        self.stop_all_motors()
+        # filter state
+        self.filtered_turn = 0.0
 
-        print("If robot moved backward, flip motor polarities with 'f' command")
-        self.sound.beep()
+        # pivot direction memory (try to pivot in direction of last evasion)
+        self.last_turn_sign = 1
 
-    def calibrate_sensors(self):
-        """Calibrate on white and black similar to original script"""
-        print("\n=== SENSOR CALIBRATION ===")
-        print("Place robot on WHITE surface and press Enter...")
-        input()
-        whites = []
-        for _ in range(30):
-            l, r = self.read_sensors()
-            whites.append((l + r) / 2.0)
-            time.sleep(0.03)
-        self.white_value = sum(whites) / len(whites)
-        self.sound.beep()
-
-        print("Place robot on BLACK line and press Enter...")
-        input()
-        blacks = []
-        for _ in range(30):
-            l, r = self.read_sensors()
-            blacks.append((l + r) / 2.0)
-            time.sleep(0.03)
-        self.black_value = sum(blacks) / len(blacks)
-
-        # threshold at midpoint between average white and black
-        self.threshold = (self.white_value + self.black_value) / 2.0
-
-        print("Calibration results:")
-        print("  White avg: {:.1f}".format(self.white_value))
-        print("  Black avg: {:.1f}".format(self.black_value))
-        print("  Threshold: {:.1f}".format(self.threshold))
-        self.sound.beep()
-
-    def auto_tune_simple(self):
-        """Very simple auto-tune for speed depending on contrast"""
-        contrast = abs(self.white_value - self.black_value)
-        if contrast > 50:
-            self.base_speed = 40
-            self.turn_speed = 30
-        elif contrast > 25:
-            self.base_speed = 30
-            self.turn_speed = 25
-        else:
-            self.base_speed = 22
-            self.turn_speed = 20
-        print("Auto-tuned base_speed={}, turn_speed={} (contrast={:.1f})".format(
-            self.base_speed, self.turn_speed, contrast))
-        self.sound.beep()
-
-    def get_sensor_quality(self):
-        try:
-            l, r = self.read_sensors()
-            ok = (0 <= l <= 100) and (0 <= r <= 100)
-            return ok, "L:{:.1f} R:{:.1f}".format(l, r)
-        except Exception as e:
-            return False, str(e)
-
-    def flip_motor_directions(self):
-        self.left_motor_polarity *= -1
-        self.right_motor_polarity *= -1
-        print("Motor polarities flipped. Left: {}, Right: {}".format(
-            self.left_motor_polarity, self.right_motor_polarity))
-        self.sound.beep()
-
-    def execute_line_following(self):
+    def calibrate(self, samples=20, delay=0.02):
         """
-        Simple threshold-based logic (bang-bang):
-         - If both sensors see white (above threshold): go straight
-         - If left sensor sees the line (lower than threshold): turn left
-         - If right sensor sees the line: turn right
-         - If both see the line: treat as intersection / sharp correction (reverse+turn)
+        Simple interactive calibration:
+         1) place both sensors on white (off the line) and press Enter
+         2) place both sensors on black (on the line) and press Enter
+        The method then computes mid-threshold per sensor.
         """
-        l_val, r_val = self.read_sensors()
+        print("Calibration: place both sensors on WHITE (off line) and press Enter".format())
+        input()
+        wL = 0.0
+        wR = 0.0
+        for _ in range(samples):
+            wL += read_reflection(self.left_sensor)
+            wR += read_reflection(self.right_sensor)
+            time.sleep(delay)
+        wL /= samples
+        wR /= samples
 
-        # Determine booleans: True if sensor sees "dark" (i.e., line)
-        left_on_line = l_val < self.threshold
-        right_on_line = r_val < self.threshold
+        print("Now place both sensors on BLACK (on line) and press Enter".format())
+        input()
+        bL = 0.0
+        bR = 0.0
+        for _ in range(samples):
+            bL += read_reflection(self.left_sensor)
+            bR += read_reflection(self.right_sensor)
+            time.sleep(delay)
+        bL /= samples
+        bR /= samples
 
-        # Default speeds
-        left_speed = self.base_speed
-        right_speed = self.base_speed
+        # midpoint thresholds
+        self.left_threshold = (wL + bL) / 2.0
+        self.right_threshold = (wR + bR) / 2.0
 
-        # Behavior rules
-        if not left_on_line and not right_on_line:
-            # Both see white -> go straight forward
-            left_speed = self.base_speed
-            right_speed = self.base_speed
-            state = "STRAIGHT"
-        elif left_on_line and not right_on_line:
-            # Left sees line -> turn left (slow left, speed right)
-            left_speed = self.base_speed - self.turn_speed
-            right_speed = self.base_speed + 0  # keep right at base to pivot
-            state = "TURN LEFT"
-        elif right_on_line and not left_on_line:
-            # Right sees line -> turn right (slow right, speed left)
-            left_speed = self.base_speed + 0
-            right_speed = self.base_speed - self.turn_speed
-            state = "TURN RIGHT"
+        print("Calibration complete:".format())
+        print("  LEFT white={:.1f}, black={:.1f}, threshold={:.1f}".format(wL, bL, self.left_threshold))
+        print("  RIGHT white={:.1f}, black={:.1f}, threshold={:.1f}".format(wR, bR, self.right_threshold))
+
+    def _sensor_states(self):
+        """Return tuple (left_on_black, right_on_black, left_val, right_val)."""
+        L = read_reflection(self.left_sensor)
+        R = read_reflection(self.right_sensor)
+        left_on_black = (L < self.left_threshold)
+        right_on_black = (R < self.right_threshold)
+        return left_on_black, right_on_black, L, R
+
+    def _compute_turn(self, left_on_black, right_on_black, L, R):
+        """
+        Compute desired turn amount (signed): positive => turn right, negative => turn left
+        We use three cases:
+         - only left_on_black: turn right  (positive)
+         - only right_on_black: turn left  (negative)
+         - neither: go straight (turn 0)
+         - both: handled by pivot logic (not here)
+        The returned turn is already filtered (exponential).
+        """
+        desired = 0.0
+        if left_on_black and not right_on_black:
+            # line moved left -> steer right
+            desired = +self.turn_mag
+            self.last_turn_sign = 1
+        elif right_on_black and not left_on_black:
+            # line moved right -> steer left
+            desired = -self.turn_mag
+            self.last_turn_sign = -1
         else:
-            # Both see line -> likely cross or very dark area
-            # simple recovery: back up slightly and turn
-            left_speed = -self.base_speed / 2.0
-            right_speed = -self.base_speed / 2.0
-            # apply small turn while reversing
-            if l_val < r_val:
-                # left darker -> turn a bit right
-                left_speed = -self.base_speed / 2.0
-                right_speed = -self.base_speed / 4.0
+            # no sensor sees black -> straight (0)
+            # We consider small sensor mismatches as dead zone
+            diff = float(R) - float(L)
+            if abs(diff) <= self.dead_zone:
+                desired = 0.0
             else:
-                left_speed = -self.base_speed / 4.0
-                right_speed = -self.base_speed / 2.0
-            state = "BOTH - RECOVER"
+                # small corrective bias proportional to sign(diff), soft corrective nudge
+                desired = clamp((diff / max(abs(diff), 1.0)) * (self.turn_mag * 0.35),
+                                -self.turn_mag * 0.35, self.turn_mag * 0.35)
 
-        # Apply polarity and limit speeds
-        final_left = self.limit_speed(left_speed * self.left_motor_polarity)
-        final_right = self.limit_speed(right_speed * self.right_motor_polarity)
+        # exponential filter for smoothing:
+        self.filtered_turn = (self.turn_alpha * self.filtered_turn +
+                              (1.0 - self.turn_alpha) * desired)
+        return self.filtered_turn
 
-        # Send to motors
-        self.mL.on(SpeedPercent(final_left))
-        self.mR.on(SpeedPercent(final_right))
+    def _apply_drive(self, turn_value):
+        """
+        Convert (base_speed, turn_value) into left/right wheel speeds and
+        apply to the MoveTank using SpeedPercent.
+        turn_value is in percent units: positive -> right turn (left wheel slower).
+        """
+        left_w = self.base_speed - turn_value
+        right_w = self.base_speed + turn_value
+        left_w = clamp(left_w, -100, 100)
+        right_w = clamp(right_w, -100, 100)
+        # apply
+        self.tank.on(SpeedPercent(left_w), SpeedPercent(right_w))
+        return left_w, right_w
 
-        # Debug print
-        print("L:{:3.0f} R:{:3.0f} | l_val:{:5.1f} r_val:{:5.1f} | thr:{:4.1f} | ML:{:5.1f} MR:{:5.1f} | {}".format(
-            left_speed, right_speed, l_val, r_val, self.threshold, final_left, final_right, state))
+    def _pivot_search(self, prefer_direction=1):
+        """
+        Pivot in place until at least one sensor stops seeing black.
+        prefer_direction: 1 -> pivot right, -1 -> pivot left
+        The method rotates wheels in opposite directions to turn in place,
+        continuously checking sensors and returning when a white is found.
+        """
+        print("Pivoting to search line (prefer_direction={})".format(prefer_direction))
+        # choose wheel signs so that positive prefer_direction rotates robot to the right
+        left_speed = PIVOT_SPEED * prefer_direction
+        right_speed = -PIVOT_SPEED * prefer_direction
+        # start pivoting
+        self.tank.on(SpeedPercent(left_speed), SpeedPercent(right_speed))
+        # continuously monitor sensors
+        try:
+            while True:
+                left_on_black, right_on_black, L, R = self._sensor_states()
+                # stop pivot when at least one sensor sees white (not black)
+                if not (left_on_black and right_on_black):
+                    # stop motors and exit
+                    self.tank.off()
+                    print("Pivot finished: left_on_black={}, right_on_black={}".format(left_on_black, right_on_black))
+                    return
+                # short sleep to avoid busy loop
+                time.sleep(PIVOT_MIN_TIME)
+        finally:
+            # ensure motors off on exit
+            self.tank.off()
 
-def setup_keyboard():
-    """Enable non-blocking single-character input"""
-    def is_data():
-        return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
+    def follow_loop(self):
+        """
+        Continuous follow loop. Call from main program.
+        This loop does not return until stopped by external control.
+        """
+        print("Starting evasive follow loop. Base speed={}, turn_mag={}".format(self.base_speed, self.turn_mag))
+        while True:
+            left_on_black, right_on_black, L, R = self._sensor_states()
 
+            # Both sensors black -> pivot search (intersection / sharp turn)
+            if left_on_black and right_on_black:
+                # prefer pivot in last known turn direction
+                prefer_dir = self.last_turn_sign
+                # perform pivot until one sensor sees white
+                self._pivot_search(prefer_dir)
+                # after pivot we continue loop (filtered_turn reset may be desirable)
+                self.filtered_turn = 0.0
+                continue
+
+            # normal cases: compute turn and drive
+            turn = self._compute_turn(left_on_black, right_on_black, L, R)
+            left_w, right_w = self._apply_drive(turn)
+
+            # status print
+            print("L:{:.1f} R:{:.1f} | L_black:{} R_black:{} | turn:{:.2f} | ML:{:.1f} MR:{:.1f}".format(
+                L, R, left_on_black, right_on_black, turn, left_w, right_w))
+
+            time.sleep(SAMPLE_INTERVAL)
+
+# -----------------------
+# Main program and controls
+# -----------------------
+def main():
     old_settings = termios.tcgetattr(sys.stdin)
     tty.setcbreak(sys.stdin.fileno())
-    return is_data, old_settings
 
-def print_menu():
-    print("\n=== SIMPLE SPEEDY LINE FOLLOWER (NO PID) ===")
-    print("Commands:")
-    print("  c - Calibrate sensors (white/black)")
-    print("  a - Auto-tune simple speeds")
-    print("  s - Start/Stop line following")
-    print("  m - Test motor directions")
-    print("  i - Sensor info")
-    print("  f - Flip motor directions")
-    print("  r - Reset (stop motors)")
-    print("  q - Quit")
-    print("============================================\n")
+    follower = EvasiveLineFollower(cl_L, cl_R, tank,
+                                   base_speed=BASE_SPEED,
+                                   turn_mag=TURN_MAG,
+                                   left_threshold=LEFT_THRESHOLD_DEFAULT,
+                                   right_threshold=RIGHT_THRESHOLD_DEFAULT,
+                                   dead_zone=DEAD_ZONE,
+                                   turn_alpha=TURN_FILTER_ALPHA)
 
-def main():
-    robot = SpeedySimple()
-    is_data, old_settings = setup_keyboard()
+    running = False
+    stop_program = False
 
-    print_menu()
-    print("Tip: run 'm' to test motors, then 'c' to calibrate sensors before 's' to start.")
+    print("Evasive Line Follower (ev3dev2)".format())
+    print("Controls: 's' start/stop, 'r' reset, 'c' calibrate, 'q' quit".format())
 
     try:
-        while True:
+        while not stop_program:
             if is_data():
-                cmd = sys.stdin.read(1).lower()
-                if cmd == 'q':
-                    print("Quitting.")
+                ch = sys.stdin.read(1)
+                if ch == 'q':
+                    stop_program = True
                     break
-                elif cmd == 'c':
-                    robot.stop_all_motors()
-                    robot.running = False
-                    robot.calibrate_sensors()
-                elif cmd == 'a':
-                    robot.auto_tune_simple()
-                elif cmd == 's':
-                    robot.running = not robot.running
-                    if robot.running:
-                        robot.sound.beep()
-                        print("Started line following.")
+                elif ch == 's':
+                    running = not running
+                    if running:
+                        sound.beep()
+                        print("Starting line follower...".format())
                     else:
-                        robot.stop_all_motors()
-                        robot.sound.beep()
-                        print("Stopped.")
-                elif cmd == 'm':
-                    robot.stop_all_motors()
-                    robot.running = False
-                    robot.test_motor_directions()
-                elif cmd == 'i':
-                    ok, info = robot.get_sensor_quality()
-                    print("Sensor info: {}".format(info))
-                    if not ok:
-                        robot.sound.speak("Sensor problem")
-                elif cmd == 'f':
-                    robot.flip_motor_directions()
-                elif cmd == 'r':
-                    robot.stop_all_motors()
-                    robot.running = False
-                    print("Motors stopped.")
-                elif cmd == 'h':
-                    print_menu()
+                        sound.beep()
+                        follower.tank.off()
+                        print("Stopped.".format())
+                elif ch == 'r':
+                    follower.filtered_turn = 0.0
+                    follower.last_turn_sign = 1
+                    print("Filters/state reset.".format())
+                elif ch == 'c':
+                    follower.calibrate()
+                    print("Calibration applied.".format())
 
-            if robot.running:
-                robot.execute_line_following()
-                time.sleep(0.03)
+            if running:
+                # run one follow iteration (blocking inside follow_loop is not used;
+                # instead call the helper _sensor_states/_compute/_apply here)
+                left_on_black, right_on_black, L, R = follower._sensor_states()
+
+                if left_on_black and right_on_black:
+                    follower._pivot_search(follower.last_turn_sign)
+                    follower.filtered_turn = 0.0
+                    continue
+
+                turn = follower._compute_turn(left_on_black, right_on_black, L, R)
+                left_w, right_w = follower._apply_drive(turn)
+
+                print("L:{:.1f} R:{:.1f} | L_black:{} R_black:{} | turn:{:.2f} | ML:{:.1f} MR:{:.1f}".format(
+                    L, R, left_on_black, right_on_black, turn, left_w, right_w))
+
             else:
-                time.sleep(0.1)
+                follower.tank.off()
 
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
-    except Exception as e:
-        print("\nError:", e)
+            time.sleep(SAMPLE_INTERVAL)
+
     finally:
-        robot.stop_all_motors()
+        # cleanup
+        sound.beep()
+        tank.off()
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-        robot.sound.beep()
-        print("Clean exit. Goodbye.")
+        print("Program terminated.".format())
 
 if __name__ == "__main__":
     main()
