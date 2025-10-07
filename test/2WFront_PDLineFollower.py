@@ -18,14 +18,14 @@ from ev3dev2.sensor.lego import ColorSensor
 from ev3dev2.motor import LargeMotor, OUTPUT_A, OUTPUT_D, SpeedPercent
 
 # ===== CENTER-LINE PD CONFIGURATION =====
-KP = 18        # Proportional gain
-KD = 3.5       # Derivative gain
-BASE_SPEED = 30   # Nominal base forward speed 25
-MAX_SPEED = 80    # Absolute maximum allowed speed per wheel
-MIN_SPEED = 10    # Minimum allowed speed when near line
+KP = 18        # Proportional gain #18
+KD = 2.0       # Derivative gain # 2.0
+BASE_SPEED = 35   # Nominal base forward speed / 30
+MAX_SPEED = 90    # Absolute maximum allowed speed per wheel / 85
+MIN_SPEED = 6    # Minimum allowed speed when near line /8
 
 # Thresholds for line detection
-LINE_THRESHOLD = 6
+LINE_THRESHOLD = 12 #12
 LINE_LOSS_TIMEOUT = 0.7  # Time to maintain last correction when line is lost (seconds)
 SEARCH_SPEED = 30
 
