@@ -23,12 +23,12 @@ from ev3dev2.motor import LargeMotor, OUTPUT_A, OUTPUT_D, SpeedPercent
 # ===== CENTER-LINE PD CONFIGURATION =====
 KP = 18        # Proportional gain #18
 KD = 2.0       # Derivative gain # 2.0
-BASE_SPEED = 35   # Nominal base forward speed / 30
-MAX_SPEED = 90    # Absolute maximum allowed speed per wheel / 85 / 90
-MIN_SPEED = 6    # Minimum allowed speed when near line /8
+BASE_SPEED = 20   # Nominal base forward speed / 30
+MAX_SPEED = 80    # Absolute maximum allowed speed per wheel / 85 / 90
+MIN_SPEED = 10    # Minimum allowed speed when near line /8
 
 # Thresholds for line detection
-LINE_THRESHOLD = 12 #12
+LINE_THRESHOLD = 4 #12
 LINE_LOSS_TIMEOUT = 0.7  # Time to maintain last correction when line is lost (seconds)
 SEARCH_SPEED = 30
 
